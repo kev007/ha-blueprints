@@ -43,7 +43,7 @@ blueprint:
           mode: box
       default: 50
 
-mode: parallel
+mode: restart
 
 variables:
   linked_entities: !input linked_entity
@@ -81,14 +81,9 @@ trigger:
 condition:
   - condition: template
     value_template: >
-      {% set trigger_context = trigger.to_state.context if trigger.to_state is not none else none %}
-      {% set automation_context = this.context if this is not none else none %}
-      {% set trigger_context_id = trigger_context.id if trigger_context is not none else none %}
-      {% set trigger_parent_id = trigger_context.parent_id if trigger_context is not none else none %}
-      {% set automation_context_id = automation_context.id if automation_context is not none else none %}
       {{ trigger.to_state is not none and
-         trigger_context_id != automation_context_id and
-         trigger_parent_id != automation_context_id }}
+         trigger.to_state.context.id != this.context.id and
+         trigger.to_state.context.parent_id != this.context.id }}
 
 action:
   - choose:
@@ -97,24 +92,18 @@ action:
             id: turn_on
         sequence:
           - condition: template
-            value_template: >
-              {{ has_targets and
-                 trigger.to_state is not none and
-                 trigger.to_state.state == 'on' }}
+            value_template: "{{ has_targets }}"
           - action: "homeassistant.turn_on"
             target:
               entity_id: "{{ target_entities }}"
             data:
-              brightness: "{{ trigger.to_state.attributes.brightness | default(omit) }}"
+              brightness: "{{ [2, (trigger.to_state.attributes.brightness | int(0))] | max }}"
       - conditions:
           - condition: trigger
             id: turn_off
         sequence:
           - condition: template
-            value_template: >
-              {{ has_targets and
-                 trigger.to_state is not none and
-                 trigger.to_state.state == 'off' }}
+            value_template: "{{ has_targets }}"
           - action: "homeassistant.turn_off"
             target:
               entity_id: "{{ target_entities }}"
@@ -124,9 +113,7 @@ action:
         sequence:
           - condition: template
             value_template: >
-              {{ has_targets and
-                 trigger.to_state.state == 'on' and
-                 trigger.to_state.attributes.percentage is not none }}
+              {{ has_targets }}
           - variables:
               set_fan_speed: "{{ trigger.to_state.attributes.percentage }}"
           - action: fan.set_percentage
@@ -140,25 +127,30 @@ action:
         sequence:
           - condition: template
             value_template: >
-              {{ has_targets and
-                 trigger.to_state.state == 'on' and
-                 trigger.to_state.attributes.brightness is not none }}
+              {{ has_targets }}
           - variables:
               set_light_brightness: "{{ trigger.to_state.attributes.brightness }}"
-          - action: light.turn_on
-            target:
-              entity_id: "{{ target_entities }}"
-            data:
-              brightness: "{{ set_light_brightness }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ set_light_brightness is not none }}"
+                sequence:
+                  - action: light.turn_on
+                    target:
+                      entity_id: "{{ target_entities }}"
+                    data:
+                      brightness: "{{ [2, (trigger.to_state.attributes.brightness | int(0))] | max }}"
+            default:
+              - action: light.turn_off
+                target:
+                  entity_id: "{{ target_entities }}"
       - conditions:
           - condition: trigger
             id: set_color_temp_kelvin
         sequence:
           - condition: template
             value_template: >
-              {{ has_targets and
-                 trigger.to_state.state == 'on' and
-                 trigger.to_state.attributes.color_temp_kelvin is not none }}
+              {{ has_targets }}
           - variables:
               set_light_color_temp_kelvin: "{{ trigger.to_state.attributes.color_temp_kelvin }}"
           - action: light.turn_on
