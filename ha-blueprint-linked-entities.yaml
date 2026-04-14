@@ -1,0 +1,168 @@
+blueprint:
+  name: Linked Entities
+  description: >-
+    **Linked Entities v1.4** 🔛
+
+    **CHANGELOG:**
+      - 1.4: (2026-04-14)
+        - Switched to mode restart for trailing-edge debounce
+        - Strengthened context guard: null-safety + parent_id check to prevent feedback loops
+        - Replaced color_temp (mireds) with color_temp_kelvin; fixed service -> action and entity_id -> target
+        - Added null-attribute, entity-is-ON, and empty-target guards to all sequences
+        - Synced brightness on turn_on; fixed milliseconds typo; default delay -> 0
+      - 1.3: (2024-07-10 - thanks @jsenecal for PR #2)
+        - Ignore changes to entities triggered by this automation
+        - Do not change the state of the entity triggering the automation
+      - 1.2: (2024-01-28 - thanks @phrak / @TimU for PR #1)
+        - Changed the action to a "Choose" building block to support fan, light and future attributes
+        - Added support for linked fan speeds
+        - Added support for linked light brightness and light color temperature
+      - 1.1: (2024-01-09)
+        - Optimized service call leveraging trigger.id
+        - Introduced max_exceeded to avoid warnings in log due to possible self-triggering
+        - Introduced a small delay after the service call to throttle the automation
+      - 1.0: (2023-12-29)
+        - First official release
+
+  domain: automation
+  input:
+    linked_entity:
+      name: Linked Entities
+      description: Entities whose state and attributes will be linked (if any of them transitions to ON state, all will be ON. Same for the OFF, BRIGHTNESS, COLOR_TEMP, and SPEED states).
+      selector:
+        entity:
+          multiple: true
+    delay_milliseconds:
+      name: Delay
+      description: How long to delay changes to linked entities
+      selector:
+        number:
+          min: 0
+          max: 1000
+          unit_of_measurement: milliseconds
+          mode: box
+      default: 50
+
+mode: parallel
+
+variables:
+  linked_entities: !input linked_entity
+  target_entities: "{{ linked_entities | reject('eq', trigger.entity_id) | list }}"
+  has_targets: "{{ target_entities | count > 0 }}"
+
+trigger:
+  - platform: state
+    id: turn_on
+    entity_id: !input linked_entity
+    to: "on"
+  - platform: state
+    id: turn_off
+    entity_id: !input linked_entity
+    to: "off"
+  - platform: state
+    id: set_speed
+    entity_id: !input linked_entity
+    attribute: percentage
+    for:
+      milliseconds: !input delay_milliseconds
+  - platform: state
+    id: set_brightness
+    entity_id: !input linked_entity
+    attribute: brightness
+    for:
+      milliseconds: !input delay_milliseconds
+  - platform: state
+    id: set_color_temp_kelvin
+    entity_id: !input linked_entity
+    attribute: color_temp_kelvin
+    for:
+      milliseconds: !input delay_milliseconds
+
+condition:
+  - condition: template
+    value_template: >
+      {% set trigger_context = trigger.to_state.context if trigger.to_state is not none else none %}
+      {% set automation_context = this.context if this is not none else none %}
+      {% set trigger_context_id = trigger_context.id if trigger_context is not none else none %}
+      {% set trigger_parent_id = trigger_context.parent_id if trigger_context is not none else none %}
+      {% set automation_context_id = automation_context.id if automation_context is not none else none %}
+      {{ trigger.to_state is not none and
+         trigger_context_id != automation_context_id and
+         trigger_parent_id != automation_context_id }}
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: turn_on
+        sequence:
+          - condition: template
+            value_template: >
+              {{ has_targets and
+                 trigger.to_state is not none and
+                 trigger.to_state.state == 'on' }}
+          - action: "homeassistant.turn_on"
+            target:
+              entity_id: "{{ target_entities }}"
+            data:
+              brightness: "{{ trigger.to_state.attributes.brightness | default(omit) }}"
+      - conditions:
+          - condition: trigger
+            id: turn_off
+        sequence:
+          - condition: template
+            value_template: >
+              {{ has_targets and
+                 trigger.to_state is not none and
+                 trigger.to_state.state == 'off' }}
+          - action: "homeassistant.turn_off"
+            target:
+              entity_id: "{{ target_entities }}"
+      - conditions:
+          - condition: trigger
+            id: set_speed
+        sequence:
+          - condition: template
+            value_template: >
+              {{ has_targets and
+                 trigger.to_state.state == 'on' and
+                 trigger.to_state.attributes.percentage is not none }}
+          - variables:
+              set_fan_speed: "{{ trigger.to_state.attributes.percentage }}"
+          - action: fan.set_percentage
+            target:
+              entity_id: "{{ target_entities }}"
+            data:
+              percentage: "{{ set_fan_speed }}"
+      - conditions:
+          - condition: trigger
+            id: set_brightness
+        sequence:
+          - condition: template
+            value_template: >
+              {{ has_targets and
+                 trigger.to_state.state == 'on' and
+                 trigger.to_state.attributes.brightness is not none }}
+          - variables:
+              set_light_brightness: "{{ trigger.to_state.attributes.brightness }}"
+          - action: light.turn_on
+            target:
+              entity_id: "{{ target_entities }}"
+            data:
+              brightness: "{{ set_light_brightness }}"
+      - conditions:
+          - condition: trigger
+            id: set_color_temp_kelvin
+        sequence:
+          - condition: template
+            value_template: >
+              {{ has_targets and
+                 trigger.to_state.state == 'on' and
+                 trigger.to_state.attributes.color_temp_kelvin is not none }}
+          - variables:
+              set_light_color_temp_kelvin: "{{ trigger.to_state.attributes.color_temp_kelvin }}"
+          - action: light.turn_on
+            target:
+              entity_id: "{{ target_entities }}"
+            data:
+              kelvin: "{{ set_light_color_temp_kelvin }}"
